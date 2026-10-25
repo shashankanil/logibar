@@ -74,6 +74,9 @@ struct DeviceState: Equatable {
     var hostCount = 0
     var currentHost = 0
     var onboardProfiles: Bool?
+    /// DPI stages of the active onboard profile, and which one is selected.
+    var onboardStages: [Int] = []
+    var onboardStage: Int?
 }
 
 /// A single HID++ 2.0 device behind a transport (device index 1–6 on a receiver, 0xFF when direct).
@@ -82,6 +85,8 @@ final class HIDPPDevice {
     let transport: HIDPPTransport
     let index: UInt8
     private var featureIndices: [UInt16: UInt8?] = [:]
+    /// Onboard memory read once per connection; cleared after writes.
+    var memoryCache: OnboardMemory?
 
     private static let extendedRates = [125, 250, 500, 1000, 2000, 4000, 8000]
 
@@ -236,6 +241,12 @@ final class HIDPPDevice {
 
         if has(Feature.onboardProfiles) {
             attempt { s.onboardProfiles = try call(Feature.onboardProfiles, 2)[0] == 1 }
+            if memoryCache == nil { memoryCache = try? readOnboardMemory() }
+            if let m = memoryCache {
+                let active = m.profiles.first { $0.sector == m.activeSector } ?? m.profiles.first
+                s.onboardStages = active?.stages ?? []
+            }
+            attempt { s.onboardStage = try currentDPIStage() }
         }
         return s
     }

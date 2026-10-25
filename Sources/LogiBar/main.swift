@@ -13,9 +13,15 @@ struct LogiBarApp: App {
         MenuBarExtra {
             MenuView(manager: manager)
         } label: {
-            Image(systemName: manager.menuSymbol)
+            MenuBarLabel(manager: manager)
         }
         .menuBarExtraStyle(.window)
+
+        Window("LogiBar", id: "settings") {
+            SettingsView(manager: manager)
+        }
+        .defaultSize(width: 860, height: 680)
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -32,7 +38,18 @@ func dumpDevices() {
         if let b = s.battery { print("  battery: \(b.percent.map { "\($0)%" } ?? "?") charging=\(b.charging) mV=\(b.millivolts.map(String.init) ?? "-")") }
         if let dpi = s.dpi, let c = s.dpiChoices { print("  dpi: \(dpi) (\(c.min)–\(c.max), step \(c.step.map(String.init) ?? "list"))") }
         if let r = s.reportRate { print("  polling: \(r) Hz of \(s.reportRates)") }
-        if let o = s.onboardProfiles { print("  onboard profiles: \(o)") }
+        if let o = s.onboardProfiles { print("  onboard profiles: \(o) stages=\(s.onboardStages) current=\(s.onboardStage.map(String.init) ?? "?")") }
+        if let m = d.memory {
+            print("  memory: format \(m.descriptor.profileFormat), \(m.descriptor.profileCount) profile(s), \(m.descriptor.buttonCount) buttons, sector size \(m.descriptor.sectorSize), active sector \(m.activeSector)")
+            for p in m.profiles {
+                let roundTrip = m.rawSectors[p.sector].map { $0 == p.encoded } ?? false
+                print("    sector \(p.sector): \(p.reportRateHz) Hz, stages \(p.stages) default #\(p.defaultStage + 1), name '\(p.name)', round-trip ok=\(roundTrip)")
+                for (i, b) in p.buttons.enumerated() {
+                    let factory = m.factoryProfiles.first?.buttons[i] ?? b
+                    print("      \(factory.physicalName(index: i)): \(b.title)")
+                }
+            }
+        }
         if let r = s.wheelRatchet { print("  smartshift: ratchet=\(r) threshold=\(s.smartShiftThreshold ?? -1)") }
         if let h = s.hiRes { print("  wheel: hiRes=\(h) invert=\(s.invertWheel ?? false)") }
         if let f = s.fnSwap { print("  fn swap: \(f)") }
@@ -40,8 +57,9 @@ func dumpDevices() {
     }
 }
 
-/// `LogiBar --snapshot out.png [--light]` renders the menu panel with the live devices to a PNG (used for the README).
-func snapshotMenu(to path: String, dark: Bool) {
+/// `LogiBar --snapshot out.png [--light] [--tab overview|memory|apps]` renders the menu panel, or with
+/// `--tab` the settings window, using the live devices (used for the README screenshots).
+func snapshot(to path: String, dark: Bool, tab: String?) {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
     let manager = DeviceManager.shared
@@ -49,7 +67,13 @@ func snapshotMenu(to path: String, dark: Bool) {
     manager.start()
     RunLoop.main.run(until: Date().addingTimeInterval(5))
 
-    let view = MenuView(manager: manager)
+    let content: AnyView
+    if let tab, let device = manager.devices.first {
+        content = AnyView(DeviceDetail(device: device, tab: tab).frame(width: 640, height: 820))
+    } else {
+        content = AnyView(MenuView(manager: manager))
+    }
+    let view = content
         .background(Color(nsColor: .windowBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .environment(\.colorScheme, dark ? .dark : .light)
@@ -62,7 +86,7 @@ func snapshotMenu(to path: String, dark: Bool) {
     window.contentView = host
     window.setFrameOrigin(NSPoint(x: -10_000, y: 0))
     window.orderFront(nil)
-    RunLoop.main.run(until: Date().addingTimeInterval(1))
+    RunLoop.main.run(until: Date().addingTimeInterval(1.5))
 
     guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
     host.cacheDisplay(in: host.bounds, to: rep)
@@ -74,7 +98,8 @@ let arguments = CommandLine.arguments
 if arguments.contains("--dump") {
     dumpDevices()
 } else if let i = arguments.firstIndex(of: "--snapshot"), i + 1 < arguments.count {
-    snapshotMenu(to: arguments[i + 1], dark: !arguments.contains("--light"))
+    let tab = arguments.firstIndex(of: "--tab").flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+    snapshot(to: arguments[i + 1], dark: !arguments.contains("--light"), tab: tab)
 } else {
     LogiBarApp.main()
 }

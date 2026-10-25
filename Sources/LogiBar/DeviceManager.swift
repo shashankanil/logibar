@@ -34,12 +34,18 @@ enum PrefStore {
 /// UI-facing model for one device.
 final class LogiDevice: ObservableObject, Identifiable {
     let id: String
-    @Published var state: DeviceState
+    @Published var state: DeviceState {
+        didSet { BatteryAlerts.check(self) }
+    }
     @Published var online = true
     @Published var busy = false
     @Published var lastError: String?
+    @Published var memory: OnboardMemory?
     var hw: HIDPPDevice
     weak var manager: DeviceManager?
+
+    private var appDPIActive = false
+    private var appDPIBaseline: Int?
 
     init(id: String, hw: HIDPPDevice, state: DeviceState, manager: DeviceManager) {
         self.id = id
@@ -48,10 +54,16 @@ final class LogiDevice: ObservableObject, Identifiable {
         self.manager = manager
     }
 
-    func setDPI(_ v: Int) { run("DPI", save: { $0.dpi = v }) { try $0.setDPI(v) } }
+    /// With onboard profiles on, a host-set DPI is only a temporary override, so it isn't saved.
+    func setDPI(_ v: Int) {
+        run("DPI", save: state.onboardProfiles == true ? nil : { $0.dpi = v }) { try $0.setDPI(v) }
+    }
+
     func setReportRate(_ hz: Int) { run("Polling rate", save: { $0.reportRate = hz }) { try $0.setReportRate(hz) } }
     func setOnboardProfiles(_ on: Bool) { run("Onboard profiles", save: { $0.onboard = on }) { try $0.setOnboardProfiles(on) } }
     func setFnSwap(_ on: Bool) { run("Fn keys", save: { $0.fnSwap = on }) { try $0.setFnSwap(on) } }
+    func selectStage(_ index: Int) { run("DPI stage") { try $0.setDPIStage(index) } }
+    func refresh() { run("Refresh") { _ in } }
 
     func setSmartShift(ratchet: Bool, threshold: Int) {
         run("SmartShift", save: { $0.ratchet = ratchet; $0.smartShift = threshold }) {
@@ -70,26 +82,94 @@ final class LogiDevice: ObservableObject, Identifiable {
         manager.queue.async { hw.changeHost(host) }
     }
 
-    private func run(_ what: String, save: @escaping (inout DevicePrefs) -> Void,
+    // MARK: Onboard memory
+
+    func reloadMemory() { run("Onboard memory") { $0.memoryCache = nil } }
+
+    /// Backs up the current memory, then writes the edited profiles to the device.
+    func saveOnboard(_ profiles: [OnboardProfile], activeIndex: Int, completion: @escaping (Error?) -> Void) {
+        guard let memory else { return }
+        let name = state.name
+        let factory = memory.factoryProfiles.first?.buttons ?? []
+        run("Save to mouse", completion: completion) { hw in
+            for p in profiles where p.enabled {
+                let hasLeft = p.buttons.enumerated().contains { i, action in
+                    action == .mouse(0x01) || (action == .unassigned && i < factory.count && factory[i] == .mouse(0x01))
+                }
+                guard hasLeft else { throw OnboardError.noLeftClick }
+            }
+            try OnboardBackups.saveAutomatic(memory, device: name)
+            try hw.writeOnboard(memory, profiles: profiles, activeIndex: activeIndex)
+        }
+    }
+
+    func restoreBackup(_ url: URL, completion: @escaping (Error?) -> Void) {
+        guard let memory else { return }
+        let name = state.name
+        run("Restore backup", completion: completion) { hw in
+            let sectors = try OnboardBackups.load(url)
+            try OnboardBackups.saveAutomatic(memory, device: name)
+            try hw.restoreSectors(sectors, descriptor: memory.descriptor)
+        }
+    }
+
+    // MARK: Per-app DPI
+
+    func applyAppDPI(_ dpi: Int) {
+        if !appDPIActive {
+            appDPIBaseline = state.dpi
+            appDPIActive = true
+        }
+        run("App DPI") { try $0.setDPI(dpi) }
+    }
+
+    func endAppDPI() {
+        guard appDPIActive else { return }
+        appDPIActive = false
+        let stage = state.onboardProfiles == true ? state.onboardStage : nil
+        let baseline = appDPIBaseline
+        run("App DPI") { hw in
+            if let stage { try hw.setDPIStage(stage) } else if let baseline { try hw.setDPI(baseline) }
+        }
+    }
+
+    private func run(_ what: String, save: ((inout DevicePrefs) -> Void)? = nil,
+                     completion: ((Error?) -> Void)? = nil,
                      _ operation: @escaping (HIDPPDevice) throws -> Void) {
         guard let manager else { return }
         let hw = self.hw, key = id, connection = state.connection
         busy = true
         manager.queue.async { [weak self] in
             let result = Result { try operation(hw) }
-            if case .success = result { PrefStore.update(key, save) }
+            if case .success = result, let save { PrefStore.update(key, save) }
             let newState = hw.readState(connection: connection)
+            let memory = hw.memoryCache
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.busy = false
                 self.state = newState
-                if case .failure(let error) = result {
+                self.memory = memory
+                switch result {
+                case .failure(let error):
                     self.lastError = "\(what): \(error)"
-                } else {
+                    completion?(error)
+                case .success:
                     self.lastError = nil
+                    completion?(nil)
                 }
             }
         }
+    }
+}
+
+/// Per-device rules: bundle ID → DPI to use while that app is frontmost.
+enum AppRules {
+    static func load(_ key: String) -> [String: Int] {
+        UserDefaults.standard.dictionary(forKey: "appRules.\(key)") as? [String: Int] ?? [:]
+    }
+
+    static func save(_ key: String, _ rules: [String: Int]) {
+        UserDefaults.standard.set(rules, forKey: "appRules.\(key)")
     }
 }
 
@@ -114,6 +194,8 @@ final class DeviceManager: ObservableObject {
 
     @Published private(set) var devices: [LogiDevice] = []
     @Published private(set) var scanning = false
+    /// Device (or "general") shown in the settings window.
+    @Published var selection: String?
 
     /// All HID++ traffic happens on this queue; IOKit callbacks arrive on the HID thread.
     let queue = DispatchQueue(label: "LogiBar.work")
@@ -147,6 +229,32 @@ final class DeviceManager: ObservableObject {
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.queue.asyncAfter(deadline: .now() + 3) { self?.scanAll() }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            self?.applyAppRules(for: app?.bundleIdentifier)
+        }
+        BatteryAlerts.requestPermission()
+    }
+
+    /// Lowest battery level among online devices, for the menu bar.
+    var lowestBattery: Int? {
+        devices.filter(\.online).compactMap { $0.state.battery?.percent }.min()
+    }
+
+    func refreshOnline() {
+        for device in devices where device.online && !device.busy { device.refresh() }
+    }
+
+    private func applyAppRules(for bundleID: String?) {
+        for device in devices where device.online && device.state.dpi != nil {
+            if let bundleID, let dpi = AppRules.load(device.id)[bundleID] {
+                device.applyAppDPI(dpi)
+            } else {
+                device.endAppDPI()
+            }
         }
     }
 
@@ -277,7 +385,7 @@ final class DeviceManager: ObservableObject {
                 state = hw.readState(connection: connection)
             }
             slots[sid] = (hw, key)
-            publish(key: key, hw: hw, state: state)
+            publish(key: key, hw: hw, state: state, memory: hw.memoryCache)
         }
     }
 
@@ -287,7 +395,7 @@ final class DeviceManager: ObservableObject {
         func apply(_ body: () throws -> Void) { if (try? body()) != nil { applied = true } }
 
         if let v = p.onboard, s.onboardProfiles != nil { apply { try hw.setOnboardProfiles(v) } }
-        if let v = p.dpi, s.dpi != nil { apply { try hw.setDPI(v) } }
+        if let v = p.dpi, s.dpi != nil, (p.onboard ?? s.onboardProfiles) != true { apply { try hw.setDPI(v) } }
         if let v = p.reportRate, s.reportRates.contains(v) { apply { try hw.setReportRate(v) } }
         if let r = p.ratchet, s.wheelRatchet != nil {
             apply { try hw.setSmartShift(ratchet: r, threshold: p.smartShift ?? s.smartShiftThreshold ?? 10) }
@@ -322,14 +430,17 @@ final class DeviceManager: ObservableObject {
         }
     }
 
-    private func publish(key: String, hw: HIDPPDevice, state: DeviceState) {
+    private func publish(key: String, hw: HIDPPDevice, state: DeviceState, memory: OnboardMemory?) {
         DispatchQueue.main.async {
             if let device = self.devices.first(where: { $0.id == key }) {
                 device.hw = hw
                 device.state = state
+                device.memory = memory
                 device.online = true
             } else {
-                self.devices.append(LogiDevice(id: key, hw: hw, state: state, manager: self))
+                let device = LogiDevice(id: key, hw: hw, state: state, manager: self)
+                device.memory = memory
+                self.devices.append(device)
             }
         }
     }

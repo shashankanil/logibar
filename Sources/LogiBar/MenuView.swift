@@ -1,8 +1,21 @@
 import ServiceManagement
 import SwiftUI
 
+/// Opens the settings window, optionally on a specific device.
+struct OpenSettingsAction {
+    let openWindow: OpenWindowAction
+    let manager: DeviceManager
+
+    func callAsFunction(_ selection: String? = nil) {
+        if let selection { manager.selection = selection }
+        openWindow(id: "settings")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
 struct MenuView: View {
     @ObservedObject var manager: DeviceManager
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -22,20 +35,41 @@ struct MenuView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            ForEach(manager.devices) { DeviceCard(device: $0) }
+            ForEach(manager.devices) {
+                DeviceCard(device: $0, openSettings: OpenSettingsAction(openWindow: openWindow, manager: manager))
+            }
 
             Divider()
-            LoginItemToggle()
-            Button("Quit LogiBar") { NSApp.terminate(nil) }
-                .buttonStyle(.borderless)
+            HStack {
+                Button("Settings…") { OpenSettingsAction(openWindow: openWindow, manager: manager)() }
+                    .keyboardShortcut(",")
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }
+                    .keyboardShortcut("q")
+            }
+            .buttonStyle(.borderless)
         }
         .padding(12)
         .frame(width: 340)
+        .onAppear { manager.refreshOnline() }
+    }
+}
+
+struct MenuBarLabel: View {
+    @ObservedObject var manager: DeviceManager
+    @AppStorage("showBatteryInMenuBar") private var showBattery = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: manager.menuSymbol)
+            if showBattery, let p = manager.lowestBattery { Text("\(p)%") }
+        }
     }
 }
 
 struct DeviceCard: View {
     @ObservedObject var device: LogiDevice
+    let openSettings: OpenSettingsAction
     @State private var expanded = true
 
     var body: some View {
@@ -48,7 +82,7 @@ struct DeviceCard: View {
                     Image(systemName: s.kind.symbol).font(.title3).frame(width: 24)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(s.name).fontWeight(.medium)
-                            .lineLimit(2)
+                            .lineLimit(3)
                             .fixedSize(horizontal: false, vertical: true)
                             .multilineTextAlignment(.leading)
                         Text(device.online ? s.connection : "\(s.connection) · asleep or off")
@@ -56,6 +90,9 @@ struct DeviceCard: View {
                     }
                     Spacer()
                     if let battery = s.battery { BatteryLabel(battery: battery) }
+                    Button { openSettings(device.id) } label: { Image(systemName: "slider.horizontal.3") }
+                        .buttonStyle(.borderless)
+                        .help("Open device settings")
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -129,7 +166,7 @@ struct DeviceControls: View {
                 Toggle(isOn: Binding(get: { onboard }, set: device.setOnboardProfiles)) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Onboard profiles")
-                        Text("Turn off so the DPI set here isn't overridden by the mouse's built-in presets.")
+                        Text(onboard ? "The DPI button cycles the stages saved in the mouse." : "LogiBar controls DPI; the DPI button won't cycle stages.")
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -206,11 +243,15 @@ struct DPIControl: View {
                 ) { editing in
                     if !editing, let d = draft { device.setDPI(Int(d)) }
                 }
-                HStack(spacing: 6) {
-                    ForEach(presets, id: \.self) { p in
-                        Button("\(p)") { device.setDPI(p) }
-                            .buttonStyle(.bordered)
-                            .tint(p == current ? .accentColor : nil)
+                if device.state.onboardProfiles == true, !device.state.onboardStages.isEmpty {
+                    StageChips(device: device)
+                } else {
+                    HStack(spacing: 6) {
+                        ForEach(presets, id: \.self) { p in
+                            Button("\(p)") { device.setDPI(p) }
+                                .buttonStyle(.bordered)
+                                .tint(p == current ? .accentColor : nil)
+                        }
                     }
                 }
             } else {
@@ -261,16 +302,25 @@ struct SmartShiftControl: View {
     }
 }
 
-struct LoginItemToggle: View {
-    @State private var enabled = SMAppService.mainApp.status == .enabled
+/// The active onboard profile's DPI stages; tap one to switch to it.
+struct StageChips: View {
+    @ObservedObject var device: LogiDevice
 
     var body: some View {
-        Toggle("Launch at login", isOn: Binding(get: { enabled }) { on in
-            do {
-                if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            } catch {}
-            enabled = SMAppService.mainApp.status == .enabled
-        })
-        .toggleStyle(.checkbox)
+        let s = device.state
+        HStack(spacing: 6) {
+            ForEach(s.onboardStages.indices, id: \.self) { i in
+                let selected = i == s.onboardStage && s.dpi == s.onboardStages[i]
+                Button { device.selectStage(i) } label: {
+                    HStack(spacing: 4) {
+                        Circle().fill(stageColors[i % stageColors.count]).frame(width: 7, height: 7)
+                        Text("\(s.onboardStages[i])").monospacedDigit()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(selected ? .accentColor : nil)
+                .help("Stage \(i + 1)")
+            }
+        }
     }
 }
