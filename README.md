@@ -41,3 +41,7 @@ LOGIBAR_DEBUG=1 .build/release/LogiBar --dump
 
 prints every detected device and its current settings without changing anything. Wireless devices
 that are asleep don't answer, so move the mouse or press a key first.
+
+## License
+
+MIT. Not affiliated with or endorsed by Logitech.
