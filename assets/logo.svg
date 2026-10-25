@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2E1065"/>
+      <stop offset="0.55" stop-color="#4338CA"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DDE3FF"/>
+    </linearGradient>
+    <linearGradient id="wheel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#6366F1"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <ellipse cx="412" cy="822" rx="128" ry="16" fill="#000000" opacity="0.22"/>
+  <rect x="272" y="362" width="280" height="440" rx="140" fill="url(#body)"/>
+  <path d="M412 362 V532 M272 532 H552" stroke="#C3CBF5" stroke-width="10" fill="none"/>
+  <rect x="390" y="407" width="44" height="90" rx="22" fill="url(#wheel)"/>
+  <g fill="none" stroke="#A5F3FC" stroke-width="28" stroke-linecap="round">
+    <path d="M562 332 A80 80 0 0 1 642 412"/>
+    <path d="M562 277 A135 135 0 0 1 697 412" opacity="0.72"/>
+    <path d="M562 222 A190 190 0 0 1 752 412" opacity="0.45"/>
+  </g>
+</svg>

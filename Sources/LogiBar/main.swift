@@ -40,8 +40,41 @@ func dumpDevices() {
     }
 }
 
-if CommandLine.arguments.contains("--dump") {
+/// `LogiBar --snapshot out.png [--light]` renders the menu panel with the live devices to a PNG (used for the README).
+func snapshotMenu(to path: String, dark: Bool) {
+    let app = NSApplication.shared
+    app.setActivationPolicy(.accessory)
+    let manager = DeviceManager.shared
+    manager.applySavedPrefs = false
+    manager.start()
+    RunLoop.main.run(until: Date().addingTimeInterval(5))
+
+    let view = MenuView(manager: manager)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .environment(\.colorScheme, dark ? .dark : .light)
+    let host = NSHostingView(rootView: view)
+    let window = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize),
+                          styleMask: .borderless, backing: .buffered, defer: false)
+    window.isOpaque = false
+    window.backgroundColor = .clear
+    window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    window.contentView = host
+    window.setFrameOrigin(NSPoint(x: -10_000, y: 0))
+    window.orderFront(nil)
+    RunLoop.main.run(until: Date().addingTimeInterval(1))
+
+    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+    host.cacheDisplay(in: host.bounds, to: rep)
+    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
+    print("Wrote \(path)")
+}
+
+let arguments = CommandLine.arguments
+if arguments.contains("--dump") {
     dumpDevices()
+} else if let i = arguments.firstIndex(of: "--snapshot"), i + 1 < arguments.count {
+    snapshotMenu(to: arguments[i + 1], dark: !arguments.contains("--light"))
 } else {
     LogiBarApp.main()
 }

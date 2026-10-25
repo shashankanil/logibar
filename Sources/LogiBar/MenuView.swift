@@ -48,6 +48,9 @@ struct DeviceCard: View {
                     Image(systemName: s.kind.symbol).font(.title3).frame(width: 24)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(s.name).fontWeight(.medium)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
                         Text(device.online ? s.connection : "\(s.connection) · asleep or off")
                             .font(.caption).foregroundStyle(.secondary)
                     }
